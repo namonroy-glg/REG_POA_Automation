@@ -1,4 +1,4 @@
-# POA/main.py
+# POA-extractor.py: Extract REG POAs and uploads them 
 #TODO: fix S3 function names to keep naming conventions consistency across versions  
 #4-1-2026: Updated to use base.py for centralized Snowflake, AWS S3, and ForthCRM auth logic
 import os
@@ -26,7 +26,7 @@ from utils import download_file_from_url, upload_to_s3, convert_to_base64
 
 # ----------------- Setup Logging -----------------
 # Using the centralized logger factory
-logger = Config.setup_logging("REG_POA_automation")
+logger = Config.setup_logging("POA_Main")
 
 # ----------------- Shared Resources -----------------
 SESSION = Config.get_session()
@@ -43,9 +43,11 @@ def fetch_data_from_snowflake():
             SELECT ENROLLED_MONTH, ID, ENROLLED_DATE, CONTACT_ID, FILE_NAME, TYPE, POA_EXTRACTED
             FROM DATA_ALPS.AUTOMATIONS.VW_POA_AUTOMATION
             WHERE POA_EXTRACTED IS NULL
-            LIMIT 100
+            LIMIT 300
+            
         """
         with conn.cursor() as cur:
+            logger.info("Fetching records from Snowflake...")
             cur.execute(query)
             data = cur.fetchall()
             
@@ -74,7 +76,7 @@ def get_document(contact_id, doc_id, file_type, api_key):
 def download_pdf(pdf_url, file_name):
     local_dir = Path('Data/attached_files')
     local_dir.mkdir(parents=True, exist_ok=True)
-    local_path = local_dir / file_name
+    #local_path = local_dir / file_name
 
     try:
         # Route processing through centralized stream-handling downloader function
@@ -83,7 +85,7 @@ def download_pdf(pdf_url, file_name):
         logger.error(f"Failed to download PDF from {pdf_url}: {e}")
         return None
 
-def extract_page_with_text(pdf_path, text_to_search, output_name, output_dir='POA'):
+def extract_page_with_text(pdf_path, text_to_search, output_name, output_dir='Data/attached_files'):
     """Original Logic: Extracts the specific page containing the legal text."""
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, output_name)
@@ -118,7 +120,7 @@ def upload_pdf_to_forthcrm(contact_id, pdf_path, api_key):
         'doc_type': '17841',
         'content_type': 'application/pdf'
     }]
-
+    #TODO: 6-8-2026: Add error handling
     response = SESSION.post(
         f'https://api.forthcrm.com/v1/contacts/{contact_id}/documents/upload',
         headers=headers,
@@ -145,6 +147,17 @@ def upload_pdf_to_s3(file_path, file_name):
     except Exception as e:
         logger.error(f"S3 Upload failed for {key}: {e}")
         return None
+
+# ----------------- Cleanup -----------------
+
+def cleanup_temp_files(attached_dir=None):
+    """Deletes the temporary download directory where both downloaded and
+    extracted PDFs are stored. Called unconditionally at the end of every run."""
+    if attached_dir is None:
+        attached_dir = os.getenv("TEMP_DIR", "Data/attached_files")
+
+    shutil.rmtree(attached_dir, ignore_errors=True)
+    logger.info(f"Cleanup: removed temp directory '{attached_dir}'.")
 
 # ----------------- Process Loops -----------------
 
@@ -236,9 +249,9 @@ def main():
     for i, res in enumerate(responses):
         cid = res['contact_id']
         try:
-            if i > 0 and i % 60 == 0:
+            '''if i > 0 and i % 60 == 0:
                 time.sleep(60)
-
+            '''
             extracted_pdf = download_and_extract_pdf(res)
             if extracted_pdf:
                 upload_and_update_status(cid, extracted_pdf, api_key)
@@ -254,31 +267,12 @@ def main():
     if error_logs:
         error_dir = Path("Data/error")
         error_dir.mkdir(parents=True, exist_ok=True)
-        #5-13-2026: Check with stakeholders if filename is important
         path = error_dir / f"errors_{datetime.now().strftime('%Y%m%d')}.log"
         with open(path, 'w') as f:
             for error in error_logs:
                 f.write(f"{error}\n")
-#4-6-2026: added code to clean up the temp files 
-# --- SURGICAL PDF CLEANUP ---
-        poa_dir = 'POA'
-        if os.path.exists(poa_dir):
-            files_removed = 0
-            for f in os.listdir(poa_dir):
-                if f.lower().endswith('.pdf'):
-                    file_path = os.path.join(poa_dir, f)
-                    try:
-                        os.remove(file_path)
-                        files_removed += 1
-                    except Exception as e:
-                        logger.error(f"Could not delete {f}: {e}")
-            logger.info(f"Cleanup complete: Removed {files_removed} PDFs from '{poa_dir}'.")
 
-        # Full deletion of the temporary attached_files folder
-        shutil.rmtree(os.getenv("TEMP_DIR", "Data/attached_files"), ignore_errors=True)    
-    # --- FOLDER DELETION REMOVED ---
-    # The 'POA' and 'Data/attached_files' folders will NOT be deleted.
-    #4-6-2026: Please ignore the above comment. It was added before this date and it's no longer valid.
+    cleanup_temp_files()
     logger.info("Automation Cycle Finished.")
 
 if __name__ == "__main__":
