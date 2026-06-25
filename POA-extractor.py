@@ -26,7 +26,7 @@ from utils import download_file_from_url, upload_to_s3, convert_to_base64
 
 # ----------------- Setup Logging -----------------
 # Using the centralized logger factory
-logger = Config.setup_logging("POA_Main")
+logger = Config.setup_logging("REG_POA_automation")
 
 # ----------------- Shared Resources -----------------
 SESSION = Config.get_session()
@@ -43,7 +43,7 @@ def fetch_data_from_snowflake():
             SELECT ENROLLED_MONTH, ID, ENROLLED_DATE, CONTACT_ID, FILE_NAME, TYPE, POA_EXTRACTED
             FROM DATA_ALPS.AUTOMATIONS.VW_POA_AUTOMATION
             WHERE POA_EXTRACTED IS NULL
-            LIMIT 300
+            LIMIT 10
             
         """
         with conn.cursor() as cur:
@@ -117,7 +117,8 @@ def upload_pdf_to_forthcrm(contact_id, pdf_path, api_key):
     body = [{
         'file_content': file_content,
         'file_name': os.path.basename(pdf_path),
-        'doc_type': '17841',
+        #6-25-2026: Change document type from  "Negotiations" (ID: 17841) to "Power of Attorney" (ID: 18). Per Lisa's request.
+        'doc_type': '18',
         'content_type': 'application/pdf'
     }]
     #TODO: 6-8-2026: Add error handling
@@ -227,7 +228,7 @@ def process_documents(df, api_key):
 
 def main():
     #5-8-2026: Updated logger text to match original wording
-    logger.info("Starting POA Extraction Automation")
+    logger.info("Starting REG POA Extraction Automation")
     
     df = fetch_data_from_snowflake()
     if df.empty:
